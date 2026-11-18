@@ -27,7 +27,7 @@ export default function Home() {
         <h1>Guidebooks</h1>
         <div className="container guidebooks">
             <div className="row">
-                {purchasedGuides.map(g => <div className="col text-center">
+                {purchasedGuides.map(g => <div className="col col-sm-3 col-lg-2 text-center">
                     <div className="card">
                         <NavLink to={`/guidebook/${g.title}/${g.year}`}>
                         <div className="card-body">
