@@ -10,7 +10,6 @@ import {CragIndex, type Tag, TAGS} from "./CragIndex.tsx";
 import axios from "axios";
 
 
-
 /** Grades 1a, 1b, 1c, 2a ... 9c. Slider positions are indices into this list. */
 const GRADES: string[] = Array.from({length: 9}, (_, i) => ["a", "b", "c"].map(l => `${i + 1}${l}`)).flat()
 const MAX_GRADE = GRADES.length - 1
@@ -48,7 +47,7 @@ function FilterField({label, active, onReset, className, children}: {
             <span className="fw-semibold">{label}</span>
             <button type="button" className="btn btn-sm btn-outline-secondary py-0" disabled={!active}
                     onClick={onReset} title={`Reset ${label.toLowerCase()} filter`}>
-                <i className="bi bi-x-circle"></i><NBSpace />Reset
+                <i className="bi bi-x-circle"></i><NBSpace/>Reset
             </button>
         </div>
         {children}
@@ -112,17 +111,134 @@ function RangeFilter({min, max, step, lo, hi, format, onChange}: {
 }
 
 
-export default function Guidebook({title, year}: {title: string | undefined, year: string | undefined}) {
-    const [error, setError] = useState<Error | null>(null);
-    const [crags, setCrags] = useState<RootCragAPI[]>([]);
-
-
+function _Guidebook({crags, title, year}: {
+    title: string | undefined,
+    year: string | undefined
+    crags: RootCragAPI[],
+}) {
     const [nameFilter, setNameFilter] = usePersistentState<string>('crag-index-filter-name', '')
     const [expositionFilter, setExpositionFilter] = usePersistentState<string[]>('crag-index-filter-expositions', [])
     const [altitudeFilter, setAltitudeFilter] = usePersistentState<OpenRange>('crag-index-filter-altitude', DEFAULT_OPEN_RANGE)
     const [approachFilter, setApproachFilter] = usePersistentState<OpenRange>('crag-index-filter-approach', DEFAULT_OPEN_RANGE)
     const [gradeFilter, setGradeFilter] = usePersistentState<[number, number]>('crag-index-filter-grades', DEFAULT_GRADE_RANGE)
     const [tagFilter, setTagFilter] = usePersistentState<string[]>('crag-index-filter-tags', [])
+
+    const altitudeMax = useMemo(() => ceilToStep(Math.max(0, ...crags.map(c => c.altitude)), ALTITUDE_STEP), [crags])
+    const approachMax = useMemo(() => ceilToStep(Math.max(0, ...crags.map(c => c.approach_time)), APPROACH_STEP), [crags])
+    const expositionOptions = useMemo<Tag[]>(() => {
+        const rank = (e: string) => EXPOSITIONS_ORDER.includes(e) ? EXPOSITIONS_ORDER.indexOf(e) : EXPOSITIONS_ORDER.length
+        return Array.from(new Set(crags.flatMap(c => c.expositions)))
+            .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+            .map(e => ({value: e, label: e}))
+    }, [crags])
+    const tagOptions = TAGS
+
+    const nameActive = nameFilter.trim() !== ''
+    const expositionActive = expositionFilter.length > 0
+    const altitudeActive = altitudeFilter[0] > 0 || altitudeFilter[1] != null
+    const approachActive = approachFilter[0] > 0 || approachFilter[1] != null
+    const gradeActive = gradeFilter[0] > 0 || gradeFilter[1] < MAX_GRADE
+    const tagActive = tagFilter.length > 0
+    const anyActive = nameActive || expositionActive || altitudeActive || approachActive || gradeActive || tagActive
+
+    const resetAllFilters = () => {
+        setNameFilter('')
+        setExpositionFilter([])
+        setAltitudeFilter(DEFAULT_OPEN_RANGE)
+        setApproachFilter(DEFAULT_OPEN_RANGE)
+        setGradeFilter(DEFAULT_GRADE_RANGE)
+        setTagFilter([])
+    }
+
+    const cragMatchesFilters = (c: RootCragAPI) => {
+        if (nameActive && !normalizeText(c.name).includes(normalizeText(nameFilter))) return false
+        if (expositionActive && !c.expositions.some(e => expositionFilter.includes(e))) return false
+        if (altitudeActive && !matchesOpenRange(c.altitude, altitudeFilter)) return false
+        if (approachActive && !matchesOpenRange(c.approach_time, approachFilter)) return false
+        if (gradeActive && !c.histogram.some(h => {
+            const g = gradeIndex(h.label)
+            return h.count > 0 && g != null && g >= gradeFilter[0] && g <= gradeFilter[1]
+        })) return false
+        if (tagActive && !tagFilter.every(t => c[t])) return false
+
+        return true
+    }
+
+    const filteredCrags = crags.filter(cragMatchesFilters)
+
+
+    return <div className="container">
+        <section>
+            <NavLink to="/"><i className="bi bi-chevron-left"></i> Back to Guidebooks</NavLink>
+        </section>
+        <section>
+            {title == null ? <h1>All crags</h1> : <h1>{title} ({year}) <NavLink className="link-print" to="./print"><i
+                className="bi bi-printer"></i></NavLink></h1>}
+
+            <div className="card card-body mb-3">
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h2 className="h5 mb-0">Filters</h2>
+                    <div className="d-flex align-items-center gap-3">
+                        <span
+                            className="small text-body-secondary">Showing {filteredCrags.length} of {crags.length} crags</span>
+                        <button type="button" className="btn btn-sm btn-secondary" disabled={!anyActive}
+                                onClick={resetAllFilters}>
+                            <i className="bi bi-arrow-counterclockwise"></i><NBSpace/>Reset all
+                        </button>
+                    </div>
+                </div>
+                <div className="row g-3">
+                    <FilterField className="col-12 col-md-6 col-lg-4" label="Name" active={nameActive}
+                                 onReset={() => setNameFilter('')}>
+                        <input type="search" className="form-control form-control-sm" placeholder="Filter by name"
+                               aria-label="Filter by name" value={nameFilter}
+                               onChange={e => setNameFilter(e.target.value)}/>
+                    </FilterField>
+                    <FilterField className="col-12 col-md-6 col-lg-8" label="Expositions" active={expositionActive}
+                                 onReset={() => setExpositionFilter([])}>
+                        <MultipleChoiceFilter idPrefix="crag-filter-exposition" options={expositionOptions}
+                                              selected={expositionFilter} onChange={setExpositionFilter}/>
+                    </FilterField>
+                    <FilterField className="col-12 col-md-4" label="Altitude" active={altitudeActive}
+                                 onReset={() => setAltitudeFilter(DEFAULT_OPEN_RANGE)}>
+                        <RangeFilter min={0} max={altitudeMax} step={ALTITUDE_STEP} lo={altitudeFilter[0]}
+                                     hi={altitudeFilter[1]}
+                                     format={(v, upper) => upper && v >= altitudeMax ? "∞" : `${v}m`}
+                                     onChange={(lo, hi) => setAltitudeFilter([lo, hi >= altitudeMax ? null : hi])}/>
+                    </FilterField>
+                    <FilterField className="col-12 col-md-4" label="Approach time" active={approachActive}
+                                 onReset={() => setApproachFilter(DEFAULT_OPEN_RANGE)}>
+                        <RangeFilter min={0} max={approachMax} step={APPROACH_STEP} lo={approachFilter[0]}
+                                     hi={approachFilter[1]}
+                                     format={(v, upper) => upper && v >= approachMax ? "∞" : `${v} min`}
+                                     onChange={(lo, hi) => setApproachFilter([lo, hi >= approachMax ? null : hi])}/>
+                    </FilterField>
+                    <FilterField className="col-12 col-md-4" label="Grades" active={gradeActive}
+                                 onReset={() => setGradeFilter(DEFAULT_GRADE_RANGE)}>
+                        <RangeFilter min={0} max={MAX_GRADE} step={1} lo={gradeFilter[0]} hi={gradeFilter[1]}
+                                     format={v => GRADES[v]}
+                                     onChange={(lo, hi) => setGradeFilter([lo, hi])}/>
+                    </FilterField>
+                    <FilterField className="col-12" label="Tags" active={tagActive} onReset={() => setTagFilter([])}>
+                        <MultipleChoiceFilter idPrefix="crag-filter-tag" options={tagOptions} selected={tagFilter}
+                                              onChange={setTagFilter}/>
+                    </FilterField>
+                </div>
+            </div>
+
+            <div className="mb-3">
+                <CragMap crags={filteredCrags} guidebookId={title + '-' + year}/>
+            </div>
+
+            <CragIndex crags={filteredCrags}/>
+        </section>
+    </div>
+}
+
+
+export default function Guidebook({title, year}: { title: string | undefined, year: string | undefined }) {
+    const [error, setError] = useState<Error | null>(null);
+    const [crags, setCrags] = useState<RootCragAPI[] | null>(null);
 
 
     useEffect(() => {
@@ -131,7 +247,7 @@ export default function Guidebook({title, year}: {title: string | undefined, yea
                 setCrags(r.data
                     .filter(r => r.bought)
                     .filter(r => title == null || (r.guide.title == title && r.guide.year == year))
-                    .sort((a,b) => Number(url_to_id(a.url)) - Number(url_to_id(b.url)))
+                    .sort((a, b) => Number(url_to_id(a.url)) - Number(url_to_id(b.url)))
                 )
             })
             .catch(e => {
@@ -140,119 +256,20 @@ export default function Guidebook({title, year}: {title: string | undefined, yea
             })
     }, [])
 
-    const content = () => {
-        const altitudeMax = useMemo(() => ceilToStep(Math.max(0, ...crags.map(c => c.altitude)), ALTITUDE_STEP), [crags])
-        const approachMax = useMemo(() => ceilToStep(Math.max(0, ...crags.map(c => c.approach_time)), APPROACH_STEP), [crags])
-        const expositionOptions = useMemo<Tag[]>(() => {
-            const rank = (e: string) => EXPOSITIONS_ORDER.includes(e) ? EXPOSITIONS_ORDER.indexOf(e) : EXPOSITIONS_ORDER.length
-            return Array.from(new Set(crags.flatMap(c => c.expositions)))
-                .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-                .map(e => ({value: e, label: e}))
-        }, [crags])
-        const tagOptions = TAGS
-
-        const nameActive = nameFilter.trim() !== ''
-        const expositionActive = expositionFilter.length > 0
-        const altitudeActive = altitudeFilter[0] > 0 || altitudeFilter[1] != null
-        const approachActive = approachFilter[0] > 0 || approachFilter[1] != null
-        const gradeActive = gradeFilter[0] > 0 || gradeFilter[1] < MAX_GRADE
-        const tagActive = tagFilter.length > 0
-        const anyActive = nameActive || expositionActive || altitudeActive || approachActive || gradeActive || tagActive
-
-        const resetAllFilters = () => {
-            setNameFilter('')
-            setExpositionFilter([])
-            setAltitudeFilter(DEFAULT_OPEN_RANGE)
-            setApproachFilter(DEFAULT_OPEN_RANGE)
-            setGradeFilter(DEFAULT_GRADE_RANGE)
-            setTagFilter([])
-        }
-
-        const cragMatchesFilters = (c: RootCragAPI) => {
-            if (nameActive && !normalizeText(c.name).includes(normalizeText(nameFilter))) return false
-            if (expositionActive && !c.expositions.some(e => expositionFilter.includes(e))) return false
-            if (altitudeActive && !matchesOpenRange(c.altitude, altitudeFilter)) return false
-            if (approachActive && !matchesOpenRange(c.approach_time, approachFilter)) return false
-            if (gradeActive && !c.histogram.some(h => {
-                const g = gradeIndex(h.label)
-                return h.count > 0 && g != null && g >= gradeFilter[0] && g <= gradeFilter[1]
-            })) return false
-            if (tagActive && !tagFilter.every(t => c[t])) return false
-
-            return true
-        }
-
-        const filteredCrags = crags.filter(cragMatchesFilters)
-
-
-        return <div className="container">
-            <section>
-                <NavLink to="/"><i className="bi bi-chevron-left"></i> Back to Guidebooks</NavLink>
-            </section>
-            <section>
-                {title == null ? <h1>All crags</h1>: <h1>{title} ({year}) <NavLink className="link-print" to="./print"><i className="bi bi-printer"></i></NavLink></h1>}
-
-                <div className="card card-body mb-3">
-                    <div className="d-flex justify-content-between align-items-center mb-3">
-                        <h2 className="h5 mb-0">Filters</h2>
-                        <div className="d-flex align-items-center gap-3">
-                            <span className="small text-body-secondary">Showing {filteredCrags.length} of {crags.length} crags</span>
-                            <button type="button" className="btn btn-sm btn-secondary" disabled={!anyActive} onClick={resetAllFilters}>
-                                <i className="bi bi-arrow-counterclockwise"></i><NBSpace />Reset all
-                            </button>
-                        </div>
-                    </div>
-                    <div className="row g-3">
-                        <FilterField className="col-12 col-md-6 col-lg-4" label="Name" active={nameActive} onReset={() => setNameFilter('')}>
-                            <input type="search" className="form-control form-control-sm" placeholder="Filter by name"
-                                   aria-label="Filter by name" value={nameFilter} onChange={e => setNameFilter(e.target.value)}/>
-                        </FilterField>
-                        <FilterField className="col-12 col-md-6 col-lg-8" label="Expositions" active={expositionActive} onReset={() => setExpositionFilter([])}>
-                            <MultipleChoiceFilter idPrefix="crag-filter-exposition" options={expositionOptions}
-                                                  selected={expositionFilter} onChange={setExpositionFilter}/>
-                        </FilterField>
-                        <FilterField className="col-12 col-md-4" label="Altitude" active={altitudeActive} onReset={() => setAltitudeFilter(DEFAULT_OPEN_RANGE)}>
-                            <RangeFilter min={0} max={altitudeMax} step={ALTITUDE_STEP} lo={altitudeFilter[0]} hi={altitudeFilter[1]}
-                                         format={(v, upper) => upper && v >= altitudeMax ? "∞" : `${v}m`}
-                                         onChange={(lo, hi) => setAltitudeFilter([lo, hi >= altitudeMax ? null : hi])}/>
-                        </FilterField>
-                        <FilterField className="col-12 col-md-4" label="Approach time" active={approachActive} onReset={() => setApproachFilter(DEFAULT_OPEN_RANGE)}>
-                            <RangeFilter min={0} max={approachMax} step={APPROACH_STEP} lo={approachFilter[0]} hi={approachFilter[1]}
-                                         format={(v, upper) => upper && v >= approachMax ? "∞" : `${v} min`}
-                                         onChange={(lo, hi) => setApproachFilter([lo, hi >= approachMax ? null : hi])}/>
-                        </FilterField>
-                        <FilterField className="col-12 col-md-4" label="Grades" active={gradeActive} onReset={() => setGradeFilter(DEFAULT_GRADE_RANGE)}>
-                            <RangeFilter min={0} max={MAX_GRADE} step={1} lo={gradeFilter[0]} hi={gradeFilter[1]}
-                                         format={v => GRADES[v]}
-                                         onChange={(lo, hi) => setGradeFilter([lo, hi])}/>
-                        </FilterField>
-                        <FilterField className="col-12" label="Tags" active={tagActive} onReset={() => setTagFilter([])}>
-                            <MultipleChoiceFilter idPrefix="crag-filter-tag" options={tagOptions} selected={tagFilter} onChange={setTagFilter}/>
-                        </FilterField>
-                    </div>
-                </div>
-
-                <div className="mb-3">
-                    <CragMap crags={filteredCrags} guidebookId={title + '-' + year} />
-                </div>
-
-                <CragIndex crags={filteredCrags}/>
-            </section>
-        </div>
-    }
-
 
     if (error != null) {
         return <div className="container">
-            <section><BackHomeButton /></section>
-            <section><Panel><div className="alert alert-danger"><strong>Error:</strong> {error.message}</div></Panel></section>
+            <section><BackHomeButton/></section>
+            <section><Panel>
+                <div className="alert alert-danger"><strong>Error:</strong> {error.message}</div>
+            </Panel></section>
         </div>
     } else if (crags == null) {
         return <div className="container">
-            <section><BackHomeButton /></section>
-            <section><Panel><LoadingSpinner /></Panel></section>
+            <section><BackHomeButton/></section>
+            <section><Panel><LoadingSpinner/></Panel></section>
         </div>
     } else {
-        return content()
+        return <_Guidebook title={title} year={year} crags={crags}/>
     }
 }
